@@ -1,14 +1,45 @@
 #include <stdio.h>
 #include <malloc.h>
 #include <stdint.h>
+#include <string.h>
 
 static const unsigned char AccessUnitDelimiter[] = { 0x00, 0x00, 0x00, 0x01, 0x09, 0x10 };
 static const unsigned char StartCode[] = {0x00, 0x00, 0x00, 0x01};
 
-size_t readInput(unsigned char* buf, size_t n)
+#define IOBUF_SIZE 4096
+
+struct ParserCtx
+{
+	unsigned char* buf; 
+	char iobuf[IOBUF_SIZE];
+	size_t iobufpos,iobufsize;
+	size_t typeStats[32];
+	size_t naluLen, maxNaluSize, naluCount, maxNALUs, naluTotalBytes;
+	int naluType,verbose,writeOutput,naluStartCode,zeros;
+	unsigned char sc[4];
+};
+
+static inline size_t readInput(struct ParserCtx* ctx, unsigned char* buf, size_t n)
 {
 	size_t count=0;
 	size_t p=0;
+
+	size_t nCopyFromIOBuf = ctx->iobufsize - ctx->iobufpos;
+
+	if( nCopyFromIOBuf == 0 )
+	{
+		ctx->iobufpos = 0;
+		p = read(0,ctx->iobuf,IOBUF_SIZE);
+		if( p < 0 ) return -1;
+		ctx->iobufsize = p;
+		nCopyFromIOBuf = ctx->iobufsize - ctx->iobufpos;
+	}
+
+	if( nCopyFromIOBuf > n ) nCopyFromIOBuf = n;
+	memcpy(buf,ctx->iobuf+ctx->iobufpos,nCopyFromIOBuf);
+	count += nCopyFromIOBuf;
+	ctx->iobufpos += nCopyFromIOBuf;
+
 	while(count<n)
 	{
 		p = read(0,buf+count,n-count);
@@ -20,161 +51,146 @@ size_t readInput(unsigned char* buf, size_t n)
 }
 
 
-#define NALU_STATS(NALU_type_stats,verbose,naluCount,naluTotalBytes,naluLen,naluType) do { \
-++ NALU_type_stats[naluType&31]; \
-if( (verbose==1 && (naluCount%256)==0 ) || verbose>=2 ) \
-{ \
-    fprintf(stderr,"NALUs: %ld,\tparsed %ld Mb,\t last NALU: size=%ld, type=%d" \
-           ,naluCount,naluTotalBytes/(1024*1024),naluLen,naluType); \
-} \
-if(verbose==1) fprintf(stderr,"              \r"); else if(verbose>=2)fprintf(stderr,"\n"); }while(0)
+struct ParserCtx* allocContext()
+{
+	struct ParserCtx* ctx = (struct ParserCtx*)calloc(1,sizeof(struct ParserCtx));
+	ctx->maxNALUs = -1;
+	ctx->writeOutput = 1;
+	ctx->naluStartCode = 1;
+	ctx->maxNaluSize = 1<<20;
+	ctx->buf = (unsigned char*) calloc(1,ctx->maxNaluSize);
+	return ctx;
+}
 
-#define NALU_FINAL_SATS(NALU_type_stats,naluCount,naluTotalBytes) do {\
+void freeContext(struct ParserCtx* ctx)
+{
+	if(ctx==0) return;
+	if(ctx->buf!=NULL) free(ctx->buf);
+	free(ctx); 
+}
+
+#define NALU_STATS(ctx) do { \
+++ ctx->typeStats[ctx->naluType&31]; \
+if( (ctx->verbose==1 && (ctx->naluCount%256)==0 ) || ctx->verbose>=2 ) \
+{ \
+    fprintf(stderr,"NALUs: %ld, parsed %ld Mb, last NALU: size=%ld, type=%d" \
+           ,ctx->naluCount,ctx->naluTotalBytes/(1024*1024),ctx->naluLen,ctx->naluType); \
+    if(ctx->verbose==1) fprintf(stderr,"              \r"); else if(ctx->verbose>=2) fprintf(stderr,"\n"); \
+} \
+}while(0)
+
+#define NALU_FINAL_SATS(ctx) do {\
 int _c; \
-fprintf(stderr,"\nNALUs count: %ld, Total bytes %ld\n",naluCount,naluTotalBytes); \
-for(_c=0;_c<32;_c++) { if(NALU_type_stats[_c]>0) fprintf(stderr,"NALU type %d count : %ld\n",_c,NALU_type_stats[_c]); } \
+fprintf(stderr,"\nNALUs count: %ld, Total bytes %ld\n",ctx->naluCount,ctx->naluTotalBytes); \
+for(_c=0;_c<32;_c++) { if(ctx->typeStats[_c]>0) fprintf(stderr,"NALU type %d count : %ld\n",_c,ctx->typeStats[_c]); } \
 } while(0)
 
-int parseAnnexB(int writeOutput, int naluStartCode, size_t maxNALUs, unsigned char lbuf[4],int verbose)
+#define WRITE_NALU(ctx) do {\
+  if( ctx->writeOutput && ctx->naluLen>0) { \
+	if( ctx->naluStartCode ) { write(1,StartCode,4); } \
+	else { write(1,ctx->sc,4); } \
+	write(1,ctx->buf,ctx->naluLen); \
+  } \
+  NALU_STATS(ctx); \
+} while(0)
+
+#define CHECK_RESIZE_BUF(ctx) do {\
+if( ctx->naluLen >= ctx->maxNaluSize ) { \
+	ctx->maxNaluSize *= 2; \
+	fprintf(stderr,"realloc NALU buffer to %ld bytes\n",ctx->maxNaluSize); \
+	ctx->buf = (unsigned char*) realloc(ctx->buf,ctx->maxNaluSize); \
+} \
+} while(0)
+
+
+int parseAnnexB(struct ParserCtx* ctx)
 {
-	static size_t NALU_type_stats[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-	size_t naluLen=0;
-	size_t maxNaluSize = 1024*1024;
-	size_t naluCount = 0;
-	size_t naluTotalBytes = 0;
-	int i, naluType, zeros=0;
-	unsigned char* buf = (unsigned char*) malloc(maxNaluSize);
-
-	while( naluCount<maxNALUs && readInput(buf+naluLen,1) == 1 )
+	while( ctx->naluCount<ctx->maxNALUs && readInput(ctx,ctx->buf+ctx->naluLen,1) == 1 )
 	{
-		++naluLen;
-		if( buf[naluLen-1]==0x00 ) ++zeros;
-		else if( buf[naluLen-1]==0x01 && zeros==3 )
+		++ctx->naluLen;
+		if( ctx->buf[ctx->naluLen-1]==0x00 ) ++ ctx->zeros;
+		else if( ctx->buf[ctx->naluLen-1]==0x01 && ctx->zeros==3 )
 		{
-			naluLen -= 4;
-			lbuf[0] = (naluLen>>24) & 0xFF;
-			lbuf[1] = (naluLen>>16) & 0xFF;
-			lbuf[2] = (naluLen>>8) & 0xFF;
-			lbuf[3] = naluLen & 0xFF;
-			if( writeOutput && naluLen>0)
-			{
-				if( naluStartCode ) { write(1,StartCode,4); }
-				else { write(1,lbuf,4); }
-				write(1,buf,naluLen);
-			}
-			++naluCount;
-			naluTotalBytes += naluLen;
-			naluType = naluLen>0 ? (buf[0]&0x1F) : 0;
-			NALU_STATS(NALU_type_stats,verbose,naluCount,naluTotalBytes,naluLen,naluType);
-			naluLen=0;
-			zeros=0;
+			ctx->naluLen -= 4;
+			ctx->sc[0] = (ctx->naluLen>>24) & 0xFF;
+			ctx->sc[1] = (ctx->naluLen>>16) & 0xFF;
+			ctx->sc[2] = (ctx->naluLen>>8) & 0xFF;
+			ctx->sc[3] = ctx->naluLen & 0xFF;
+			++ctx->naluCount;
+			ctx->naluTotalBytes += ctx->naluLen;
+			ctx->naluType = ctx->naluLen>0 ? (ctx->buf[0]&0x1F) : 0;
+			WRITE_NALU(ctx);
+			ctx->naluLen=0;
+			ctx->zeros=0;
 		}
-		else { zeros=0; }
-
-		if( naluLen >= maxNaluSize )
-		{
-			fprintf(stderr,"realloc NALU buffer to %ld bytes\n",naluLen);
-			maxNaluSize = naluLen*2;
-			buf = (unsigned char*) realloc(buf,maxNaluSize);
-		}
+		else { ctx->zeros=0; }
+		CHECK_RESIZE_BUF(ctx);
 	}
-	if( writeOutput && naluLen>0 )
-	{
-		if( naluStartCode ) { write(1,StartCode,4); }
-		else { write(1,lbuf,4); }
-		write(1,buf,naluLen);
-	}
-
-	NALU_FINAL_SATS(NALU_type_stats,naluCount,naluTotalBytes);
-
-	free( buf );
+	WRITE_NALU(ctx);
+	NALU_FINAL_SATS(ctx);
 	return 1;
 }
 
-// writeOutput: 0 no output, 1 write to standard output
-int parseMKVH264(int writeOutput, int naluStartCode, size_t maxNALUs, unsigned char lbuf[4],int verbose)
+int parseMKVH264(struct ParserCtx* ctx)
 {
-	static size_t NALU_type_stats[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-	size_t naluLen=0;
-	size_t maxNaluSize = 1024*1024*4;
-	size_t naluCount = 0;
-	size_t naluTotalBytes = 0;
-	int i,naluType;
-	unsigned char* buf = (unsigned char*) malloc(maxNaluSize);
-
 	do 
 	{
-		naluLen = ( ((unsigned int)lbuf[0]) << 24 )
-			| ( ((unsigned int)lbuf[1]) << 16 ) 
-			| ( ((unsigned int)lbuf[2]) << 8 ) 
-			| ((unsigned int)lbuf[3]) ;
-		//printf("@%016lX: %02X %02X %02X %02X => %ld\n",naluTotalBytes+naluCount*4,buf[0],buf[1],buf[2],buf[3],naluLen);
+		ctx->naluLen = ( ((unsigned int)ctx->sc[0]) << 24 )
+			| ( ((unsigned int)ctx->sc[1]) << 16 ) 
+			| ( ((unsigned int)ctx->sc[2]) << 8 ) 
+			| ((unsigned int)ctx->sc[3]) ;
+		CHECK_RESIZE_BUF(ctx);
 
-		if( naluLen > maxNaluSize )
-		{
-			fprintf(stderr,"realloc NALU buffer to %ld bytes\n",naluLen);
-			maxNaluSize = naluLen;
-			buf = (unsigned char*) realloc(buf,maxNaluSize);
-		}
-
-		size_t bytesRead = readInput(buf,naluLen);
+		size_t bytesRead = readInput(ctx,ctx->buf,ctx->naluLen);
 		if( bytesRead < 0 )
 		{
 			fprintf(stderr,"I/O Error, aborting\n");
 			return 0;
 		}
-		else if( bytesRead < naluLen )
+		else if( bytesRead < ctx->naluLen )
 		{
 			fprintf(stderr,"Premature end of file, aborting\n");
 			return 0;
 		}
-		if( writeOutput && naluLen>0 )
-		{
-			if( naluStartCode ) { write(1,StartCode,4); }
-			else { write(1,lbuf,4); }
-			write(1,buf,naluLen);
-		}
-		++naluCount;
-		naluTotalBytes += naluLen;
-		naluType = naluLen>0 ? (buf[0]&0x1F) : 0;
-		NALU_STATS(NALU_type_stats,verbose,naluCount,naluTotalBytes,naluLen,naluType);
-	} while( naluCount<maxNALUs && readInput(lbuf,4) == 4 );
+		++ ctx->naluCount;
+		ctx->naluTotalBytes += ctx->naluLen;
+		ctx->naluType = ctx->naluLen>0 ? (ctx->buf[0]&0x1F) : 0;
+		WRITE_NALU(ctx);
+	} while( ctx->naluCount<ctx->maxNALUs && readInput(ctx,ctx->sc,4) == 4 );
 
-	NALU_FINAL_SATS(NALU_type_stats,naluCount,naluTotalBytes);
+	NALU_FINAL_SATS(ctx);
 
-	free( buf );
 	return 1;
 }
 
 int main(int argc, char* argv[])
 {
-	int writeResult=1, startcode=1, verbose=0;
+	struct ParserCtx* ctx=NULL;
 	int i,ok;
-	unsigned char buf[4];
-	size_t maxNALUs = 1ull<<62;
+	ctx = allocContext();
+
 	for(i=1;i<argc;i++)
 	{
-		if( strcmp(argv[i],"-mkv") == 0 ) startcode = 0;
-		else if( strcmp(argv[i],"-annexb") == 0 ) startcode = 1;		
-		else if( strcmp(argv[i],"-stat") == 0 ) writeResult = 0;
-		else if( strcmp(argv[i],"-nalucount") == 0 ) { ++i; maxNALUs = atoi(argv[i]); }
-		else if( strcmp(argv[i],"-v") == 0 ) { ++verbose; }
+		if( strcmp(argv[i],"-mkv") == 0 ) ctx->naluStartCode = 0;
+		else if( strcmp(argv[i],"-annexb") == 0 ) ctx->naluStartCode = 1;		
+		else if( strcmp(argv[i],"-stat") == 0 ) ctx->writeOutput = 0;
+		else if( strcmp(argv[i],"-nalucount") == 0 ) { ++i; ctx->maxNALUs = atoi(argv[i]); }
+		else if( strcmp(argv[i],"-v") == 0 ) { ++ ctx->verbose; }
 	}
 
-	fprintf(stderr,"Write=%d, StartCodes=%d, NALUCount=%ld\n",writeResult,startcode,maxNALUs);
-
-	if( readInput(buf,4) != 4 ) return 1;
-	if( buf[0]==0x00 && buf[1]==0x00 && buf[2]==0x00 && buf[3]==0x01 )
+	if( readInput(ctx,ctx->sc,4) != 4 ) return 1;
+	if( ctx->sc[0]==0x00 && ctx->sc[1]==0x00 && ctx->sc[2]==0x00 && ctx->sc[3]==0x01 )
 	{
 		fprintf(stderr,"Reading Annex B input\n");
-		ok = parseAnnexB(writeResult,startcode,maxNALUs,buf,verbose);
+		ok = parseAnnexB(ctx);
 	}
 	else
 	{
 		fprintf(stderr,"Reading MKV's raw h264 format\n");
-		ok = parseMKVH264(writeResult,startcode,maxNALUs,buf,verbose);
+		ok = parseMKVH264(ctx);
 	}
 
+	freeContext(ctx);
 	return (ok==0);
 }
 
