@@ -19,14 +19,30 @@ size_t readInput(unsigned char* buf, size_t n)
 	return count;
 }
 
+
+#define NALU_STATS(NALU_type_stats,verbose,naluCount,naluTotalBytes,naluLen,naluType) do { \
+++ NALU_type_stats[naluType&31]; \
+if( (verbose==1 && (naluCount%256)==0 ) || verbose>=2 ) \
+{ \
+    fprintf(stderr,"NALUs: %ld,\tparsed %ld Mb,\t last NALU: size=%ld, type=%d" \
+           ,naluCount,naluTotalBytes/(1024*1024),naluLen,naluType); \
+} \
+if(verbose==1) fprintf(stderr,"              \r"); else if(verbose>=2)fprintf(stderr,"\n"); }while(0)
+
+#define NALU_FINAL_SATS(NALU_type_stats,naluCount,naluTotalBytes) do {\
+int _c; \
+fprintf(stderr,"\nNALUs count: %ld, Total bytes %ld\n",naluCount,naluTotalBytes); \
+for(_c=0;_c<32;_c++) { if(NALU_type_stats[_c]>0) fprintf(stderr,"NALU type %d count : %ld\n",_c,NALU_type_stats[_c]); } \
+} while(0)
+
 int parseAnnexB(int writeOutput, int naluStartCode, size_t maxNALUs, unsigned char lbuf[4],int verbose)
 {
+	static size_t NALU_type_stats[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 	size_t naluLen=0;
 	size_t maxNaluSize = 1024*1024;
 	size_t naluCount = 0;
 	size_t naluTotalBytes = 0;
-	int i;
-	int zeros=0;
+	int i, naluType, zeros=0;
 	unsigned char* buf = (unsigned char*) malloc(maxNaluSize);
 
 	while( naluCount<maxNALUs && readInput(buf+naluLen,1) == 1 )
@@ -48,11 +64,8 @@ int parseAnnexB(int writeOutput, int naluStartCode, size_t maxNALUs, unsigned ch
 			}
 			++naluCount;
 			naluTotalBytes += naluLen;
-			if( naluCount % 256 == 0 || verbose >= 2 )
-			{
-				fprintf(stderr,"NALUs: %ld\tMb: %ld, last NALU size %ld                       \r"
-					,naluCount,naluTotalBytes/(1024*1024),naluLen);
-			}
+			naluType = naluLen>0 ? (buf[0]&0x1F) : 0;
+			NALU_STATS(NALU_type_stats,verbose,naluCount,naluTotalBytes,naluLen,naluType);
 			naluLen=0;
 			zeros=0;
 		}
@@ -72,8 +85,7 @@ int parseAnnexB(int writeOutput, int naluStartCode, size_t maxNALUs, unsigned ch
 		write(1,buf,naluLen);
 	}
 
-	fprintf(stderr,"\nNumber of NALUs : %ld\n",naluCount);
-	fprintf(stderr,"Total NALU bytes : %ld\n",naluTotalBytes);
+	NALU_FINAL_SATS(NALU_type_stats,naluCount,naluTotalBytes);
 
 	free( buf );
 	return 1;
@@ -82,11 +94,12 @@ int parseAnnexB(int writeOutput, int naluStartCode, size_t maxNALUs, unsigned ch
 // writeOutput: 0 no output, 1 write to standard output
 int parseMKVH264(int writeOutput, int naluStartCode, size_t maxNALUs, unsigned char lbuf[4],int verbose)
 {
+	static size_t NALU_type_stats[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 	size_t naluLen=0;
 	size_t maxNaluSize = 1024*1024*4;
 	size_t naluCount = 0;
 	size_t naluTotalBytes = 0;
-	int i;
+	int i,naluType;
 	unsigned char* buf = (unsigned char*) malloc(maxNaluSize);
 
 	do 
@@ -123,15 +136,11 @@ int parseMKVH264(int writeOutput, int naluStartCode, size_t maxNALUs, unsigned c
 		}
 		++naluCount;
 		naluTotalBytes += naluLen;
-		if( naluCount % 256 == 0 || verbose >= 2 )
-		{
-			fprintf(stderr,"NALUs: %ld\tMb: %ld, last NALU size %ld                       \r"
-				,naluCount,naluTotalBytes/(1024*1024),naluLen);
-		}
+		naluType = naluLen>0 ? (buf[0]&0x1F) : 0;
+		NALU_STATS(NALU_type_stats,verbose,naluCount,naluTotalBytes,naluLen,naluType);
 	} while( naluCount<maxNALUs && readInput(lbuf,4) == 4 );
 
-	fprintf(stderr,"\nNumber of NALUs : %ld\n",naluCount);
-	fprintf(stderr,"Total NALU bytes : %ld\n",naluTotalBytes);
+	NALU_FINAL_SATS(NALU_type_stats,naluCount,naluTotalBytes);
 
 	free( buf );
 	return 1;
