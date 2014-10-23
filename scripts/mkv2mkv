@@ -1,0 +1,100 @@
+#!/bin/bash
+
+PROF_LIST="baseline main high"
+PRESET_LIST="ultrafast superfast veryfast faster fast medium slow slower veryslow placebo"
+TUNE_LIST="film animation grain stillimage psnr ssim fastdecode zerolatency"
+VQ_LIST="1-32"
+
+INPUT=$1
+OUTPUT=$2
+shift ; shift
+
+OFMT=`echo $OUTPUT|cut -d'.' -f2`
+echo "Output Format $OFMT"
+
+VRE=1
+PRESET=""
+TUNE=""
+VR="10000k"
+VQ=""
+PROF=""
+LVL=""
+DI=0
+SL=""
+ARE=0
+AR="768k"
+
+ffmpeg -i $INPUT 2>&1 |grep "^ *Stream #"| cut -d':' -f2-
+SL=`ffmpeg -i $INPUT 2>&1 |grep "^ *Stream #"| cut -d':' -f2|cut -d'(' -f1|tr "\n" " "`
+
+read -p "Streams [$SL] " R ; [ "$R" != "" ] && SL=$R
+read -p "Re-encode video ? [$VRE] " R ; [ "$R" != "" ] && VRE=$R
+if [ $VRE -ge 1 ]
+then
+	echo "Video settings :"
+	read -p "Preset ($PRESET_LIST) [$PRESET] " R ; [ "$R" != "" ] && PRESET=$R
+	read -p "Tune ($TUNE_LIST) [$TUNE] " R ; [ "$R" != "" ] && TUNE=$R
+	read -p "Profile ($PROF_LIST) [$PROF] " R ; [ "$R" != "" ] && PROF=$R
+	read -p "Level [$LVL] " R ; [ "$R" != "" ] && LVL=$R
+	read -p "Quality ($VQ_LIST) [$VQ] " R ; [ "$R" != "" ] && VQ=$R
+	read -p "Bitrate [$VR] " R ; [ "$R" != "" ] && VR=$R
+	read -p "Deinterlace [$DI] " R ; [ "$R" != "" ] && DI=$R
+fi
+read -p "Re-encode audio ? [$ARE] " R ; [ "$R" != "" ] && ARE=$R
+if [ $ARE -ge 1 ]
+then
+	echo "Audio settings :"
+	read -p "Bitrate [$AR] " R ; [ "$R" != "" ] && AR=$R
+fi
+
+if [ "$SL" != "" ]
+then
+	MAP_OPT=""
+	for ST in $SL
+	do
+		MAP_OPT="$MAP_OPT -map 0:$ST"
+	done
+fi
+
+if [ $VRE -lt 1 ]
+then
+	TUNE_OPT=""
+	PRESET_OPT=""
+	VQ_OPT=""
+	VR_OPT=""
+	PROF_OPT=""
+	LVL_OPT=""
+	DI_OPT=""
+	[ "$OFMT" = "h264" ] && BSF_OPT="-bsf:v h264_mp4toannexb"
+	[ "$OFMT" = "m2ts" ] && BSF_OPT="-bsf:v h264_mp4toannexb"
+	[ "$OFMT" = "ts" ] && BSF_OPT="-bsf:v h264_mp4toannexb"
+	VC="copy"
+else
+	[ "$TUNE" != "" ] && TUNE_OPT="-tune $TUNE"
+	[ "$PRESET" != "" ] && PRESET_OPT="-preset:v $PRESET"
+	[ "$VQ" != "" ] && VQ_OPT="-crf:v $VQ"
+	[ "$VR" != "" ] && VR_OPT="-maxrate:v $VR -bufsize:v $VR"
+	[ "$PROF" != "" ] && PROF_OPT="-profile:v $PROF"
+	[ "$LVL" != "" ] && LVL_OPT="-level $LVL"
+	[ $DI -ge 1 ] && DI_OPT="-vf yadif=0:-1:0"
+	VC="libx264"
+	COMPAT_OPT="-bluray-compat:v 1"
+fi
+
+if [ $ARE -lt 1 ]
+then
+	AR_OPT=""
+	AC="copy"
+else
+	[ "$AR" != "" ] && AR_OPT="-b:a $AR"
+	AC="libfdk_aac"
+fi
+
+FFMPEG_CMD="ffmpeg -y -strict experimental -i $INPUT $DI_OPT $MAP_OPT -c:v $VC $BSF_OPT $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT -c:a $AC $AR_OPT -c:s copy $OUTPUT"
+echo "$FFMPEG_CMD"
+date > $OUTPUT.log
+echo "$FFMPEG_CMD" >> $OUTPUT.log
+$FFMPEG_CMD 2>&1 | tee -a $OUTPUT.log
+cat $OUTPUT.log | grep -v "^frame=" > $OUTPUT.log2
+mv -f $OUTPUT.log2 $OUTPUT.log
+date >> $OUTPUT.log
