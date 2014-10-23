@@ -63,7 +63,7 @@ ffmpeg -v 0 -y -i $INPUT -map 0:a -c:a copy $DEMUX_AUDIOSUB &
 sleep 2
 
 # decode H.264+MVC stream using Franhauffer JM 18.6 soft
-#LDECODDBG="-p DecFrmNum=120"
+#LDECODDBG="-p DecFrmNum=360"
 ldecod.exe -d /usr/local/etc/decoder.cfg -p DecodeAllLayers=1 -p InputFile=$DEMUX_H264 -p OutputFile=$LDECOD_OUTPUT -p Silent=1 $LDECODDBG >/dev/null&
 sleep 2
 
@@ -74,7 +74,7 @@ sleep 2
 ffmpeg -y \
 	-f rawvideo -pixel_format yuv420p -video_size ${DRES_X}x${RES_Y} -framerate $FRAMERATE -i $YUV_SBS \
 	-i $DEMUX_AUDIOSUB \
-	-filter_complex "[0:v]scale=iw/2:-1,setpts=PTS-STARTPTS[video];[1:a]asetpts=PTS-STARTPTS[audio]" \
+	-filter_complex "[0:v]scale=$RES_X:$RES_Y,setpts=PTS-STARTPTS[video];[1:a]asetpts=PTS-STARTPTS[audio]" \
 	-map [video] -map [audio] \
 	-c:v libx264 -preset:v veryslow -crf:v 20 -bluray-compat:v 1 \
 	-c:a libfdk_aac -b:a 768k \
