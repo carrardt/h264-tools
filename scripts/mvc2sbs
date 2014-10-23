@@ -56,26 +56,28 @@ set -x
 mkfifo $DEMUX_H264 $YUV_LEFT $YUV_RIGHT $YUV_SBS $DEMUX_AUDIOSUB
 
 # extract raw H.264+MVC track with AnnexB flavour
-# -map 0:a -c:a copy $DEMUX_AUDIOSUB &
 ffmpeg -v 0 -y -i $INPUT -map 0:v -f h264 -c:v copy -bsf:v h264_mp4toannexb $DEMUX_H264 &
 sleep 2
 
+ffmpeg -v 0 -y -i $INPUT -map 0:a -c:a copy $DEMUX_AUDIOSUB &
+sleep 2
+
 # decode H.264+MVC stream using Franhauffer JM 18.6 soft
-#LDECOD_DBG="-p DecFrmNum=120"
-ldecod.exe -d /usr/local/etc/decoder.cfg -p DecodeAllLayers=1 -p InputFile=$DEMUX_H264 -p OutputFile=$LDECOD_OUTPUT -p Silent=1 $LDECOD_DBG &
+#LDECODDBG="-p DecFrmNum=120"
+ldecod.exe -d /usr/local/etc/decoder.cfg -p DecodeAllLayers=1 -p InputFile=$DEMUX_H264 -p OutputFile=$LDECOD_OUTPUT -p Silent=1 $LDECODDBG >/dev/null&
 sleep 2
 
 # bufferize 2 inputs and output a single Side By Side raw YUV420p stream
 yuvsbspipe -w $RES_X -h $RES_Y -n 48 -l $YUV_LEFT -r $YUV_RIGHT -sbs -o $YUV_SBS &
 sleep 2
 
-ffmpeg -y -f rawvideo -pixel_format yuv420p -video_size $ -framerate $FRAMERATE -i $YUV_SBS \
-	-map 0:v \
-	-vf scale=iw/2,-1 \
+ffmpeg -y \
+	-f rawvideo -pixel_format yuv420p -video_size ${DRES_X}x${RES_Y} -framerate $FRAMERATE -i $YUV_SBS \
+	-i $DEMUX_AUDIOSUB \
+	-filter_complex "[0:v]scale=iw/2:-1,setpts=PTS-STARTPTS[video];[1:a]asetpts=PTS-STARTPTS[audio]" \
+	-map [video] -map [audio] \
 	-c:v libx264 -preset:v veryslow -crf:v 20 -bluray-compat:v 1 \
+	-c:a libfdk_aac -b:a 768k \
 	$OUTPUT
-#	-i $INPUT \
-#	-map 1:a \
 
 rm -fr $TEMPDIR
-
