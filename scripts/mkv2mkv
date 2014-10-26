@@ -9,8 +9,25 @@ INPUT=$1
 OUTPUT=$2
 shift ; shift
 
+# Temp dir
+TEMPDIR=`mktemp -d`
 OFMT=`echo $OUTPUT|cut -d'.' -f2`
-echo "Output Format $OFMT"
+
+# input info
+INFO="$TEMPDIR/ffprobe.txt"
+ffprobe $INPUT 2>&1 |grep "^ *Stream #" > $INFO
+SL=`cat $INFO|cut -d':' -f2|cut -d'(' -f1|tr "\n" " "`
+FRAMERATE=`cat $INFO|grep "Video:"|head -n 1|cut -d',' -f4|tr -d " fps"`
+RES=`cat $INFO|grep "Video:"|head -n 1|cut -d',' -f3|cut -d' ' -f2`
+NSUB=`cat $INFO|grep -c "Subtitle"`
+AFMT=`cat $INFO|grep "Audio"|head -n 1|cut -d',' -f3|cut -d'(' -f1|tr -d " "`
+
+# filter input information
+RES_X=`echo $RES|cut -d'x' -f1`
+RES_Y=`echo $RES|cut -d'x' -f2`
+let DRES_X=2*$RES_X
+let DRES_Y=2*$RES_Y
+[ "$FRAMERATE" = "23.98" ] && FRAMERATE="24000/1001"
 
 VRE=1
 PRESET=""
@@ -20,13 +37,12 @@ VQ=""
 PROF=""
 LVL=""
 DI=0
-SL=""
+RES=""
 ARE=0
 AR="768k"
+ACHAN=""
 
-ffmpeg -i $INPUT 2>&1 |grep "^ *Stream #"| cut -d':' -f2-
-SL=`ffmpeg -i $INPUT 2>&1 |grep "^ *Stream #"| cut -d':' -f2|cut -d'(' -f1|tr "\n" " "`
-
+cat $INFO
 read -p "Streams [$SL] " R ; [ "$R" != "" ] && SL=$R
 read -p "Re-encode video ? [$VRE] " R ; [ "$R" != "" ] && VRE=$R
 if [ $VRE -ge 1 ]
@@ -39,12 +55,14 @@ then
 	read -p "Quality ($VQ_LIST) [$VQ] " R ; [ "$R" != "" ] && VQ=$R
 	read -p "Bitrate [$VR] " R ; [ "$R" != "" ] && VR=$R
 	read -p "Deinterlace [$DI] " R ; [ "$R" != "" ] && DI=$R
+	read -p "Resolution (${RES_X}:${RES_Y}) [$RES] " R ; [ "$R" != "" ] && RES=$R
 fi
 read -p "Re-encode audio ? [$ARE] " R ; [ "$R" != "" ] && ARE=$R
 if [ $ARE -ge 1 ]
 then
 	echo "Audio settings :"
 	read -p "Bitrate [$AR] " R ; [ "$R" != "" ] && AR=$R
+	read -p "Channels ($AFMT) [$ACHAN] " R ; [ "$R" != "" ] && ACHAN=$R
 fi
 
 if [ "$SL" != "" ]
@@ -65,6 +83,7 @@ then
 	PROF_OPT=""
 	LVL_OPT=""
 	DI_OPT=""
+	RES_OPT=""
 	[ "$OFMT" = "h264" ] && BSF_OPT="-bsf:v h264_mp4toannexb"
 	[ "$OFMT" = "m2ts" ] && BSF_OPT="-bsf:v h264_mp4toannexb"
 	[ "$OFMT" = "ts" ] && BSF_OPT="-bsf:v h264_mp4toannexb"
@@ -76,6 +95,7 @@ else
 	[ "$VR" != "" ] && VR_OPT="-maxrate:v $VR -bufsize:v $VR"
 	[ "$PROF" != "" ] && PROF_OPT="-profile:v $PROF"
 	[ "$LVL" != "" ] && LVL_OPT="-level $LVL"
+	[ "$RES" != "" ] && RES_OPT="-vf scale=$RES"
 	[ $DI -ge 1 ] && DI_OPT="-vf yadif=0:-1:0"
 	VC="libx264"
 	COMPAT_OPT="-bluray-compat:v 1"
@@ -84,17 +104,28 @@ fi
 if [ $ARE -lt 1 ]
 then
 	AR_OPT=""
+	ACHAN_OPT=""
 	AC="copy"
 else
 	[ "$AR" != "" ] && AR_OPT="-b:a $AR"
+	[ "$ACHAN" != "" ] && ACHAN_OPT="-ac $ACHAN"
 	AC="libfdk_aac"
 fi
 
-FFMPEG_CMD="ffmpeg -y -strict experimental -i $INPUT $DI_OPT $MAP_OPT -c:v $VC $BSF_OPT $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT -c:a $AC $AR_OPT -c:s copy $OUTPUT"
+if [ $NSUB -ge 1 ]
+then
+	SUB_OPT="-c:s copy"
+else
+	SUB_OPT=""
+fi
+
+FFMPEG_CMD="ffmpeg -y -strict experimental -i $INPUT $DI_OPT $RES_OPT $MAP_OPT -c:v $VC $BSF_OPT $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT $ACHAN_OPT -c:a $AC $AR_OPT $SUB_OPT $OUTPUT"
 echo "$FFMPEG_CMD"
 date > $OUTPUT.log
 echo "$FFMPEG_CMD" >> $OUTPUT.log
 $FFMPEG_CMD 2>&1 | tee -a $OUTPUT.log
+date >> $OUTPUT.log
 cat $OUTPUT.log | grep -v "^frame=" > $OUTPUT.log2
 mv -f $OUTPUT.log2 $OUTPUT.log
-date >> $OUTPUT.log
+
+rm -fr $TEMPDIR

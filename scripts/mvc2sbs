@@ -20,7 +20,6 @@ YUV_RIGHT="$TEMPDIR/dec_ViewId0001.yuv"
 # Side By Side pipe output
 YUV_SBS="$TEMPDIR/sbs.yuv"
 
-
 # gather information about input
 ffprobe $INPUT 2>&1 | grep "Stream #0" > $INFO
 FRAMERATE=`cat $INFO|grep "Video:"| grep "Video:"|cut -d',' -f4|tr -d " fps"`
