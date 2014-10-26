@@ -36,11 +36,12 @@ VR="10000k"
 VQ=""
 PROF=""
 LVL=""
-DI=0
+DI="N"
 RES=""
 ARE=0
 AR="768k"
 ACHAN=""
+MVCDEC="N"
 
 cat $INFO
 read -p "Streams [$SL] " R ; [ "$R" != "" ] && SL=$R
@@ -48,16 +49,30 @@ read -p "Re-encode video ? [$VRE] " R ; [ "$R" != "" ] && VRE=$R
 if [ $VRE -ge 1 ]
 then
 	echo "Video settings :"
+	read -p "Decode MVC (y/n) [$MVCDEC] " R ; [ "$R" != "" ] && MVCDEC=$R
 	read -p "Preset ($PRESET_LIST) [$PRESET] " R ; [ "$R" != "" ] && PRESET=$R
 	read -p "Tune ($TUNE_LIST) [$TUNE] " R ; [ "$R" != "" ] && TUNE=$R
 	read -p "Profile ($PROF_LIST) [$PROF] " R ; [ "$R" != "" ] && PROF=$R
 	read -p "Level [$LVL] " R ; [ "$R" != "" ] && LVL=$R
 	read -p "Quality ($VQ_LIST) [$VQ] " R ; [ "$R" != "" ] && VQ=$R
 	read -p "Bitrate [$VR] " R ; [ "$R" != "" ] && VR=$R
-	read -p "Deinterlace [$DI] " R ; [ "$R" != "" ] && DI=$R
-	read -p "Resolution (${RES_X}:${RES_Y}) [$RES] " R ; [ "$R" != "" ] && RES=$R
+	if [ $RES_X -eq 720 ]
+	then
+		read -p "Deinterlace (y/n) [$DI] " R ; [ "$R" != "" ] && DI=$R
+	fi
+	if [ "$MVCDEC" != "y" ]
+	then
+		read -p "Resolution (${RES_X}:${RES_Y}) [$RES] " R ; [ "$R" != "" ] && RES=$R
+	fi
 fi
-read -p "Re-encode audio ? [$ARE] " R ; [ "$R" != "" ] && ARE=$R
+
+if [ "$MVCDEC" != "y" ]
+then
+	read -p "Re-encode audio ? [$ARE] " R ; [ "$R" != "" ] && ARE=$R
+else
+	ARE=1
+fi
+
 if [ $ARE -ge 1 ]
 then
 	echo "Audio settings :"
@@ -96,7 +111,7 @@ else
 	[ "$PROF" != "" ] && PROF_OPT="-profile:v $PROF"
 	[ "$LVL" != "" ] && LVL_OPT="-level $LVL"
 	[ "$RES" != "" ] && RES_OPT="-vf scale=$RES"
-	[ $DI -ge 1 ] && DI_OPT="-vf yadif=0:-1:0"
+	[ "$DI" = "y" ] && DI_OPT="-vf yadif=0:-1:0"
 	VC="libx264"
 	COMPAT_OPT="-bluray-compat:v 1"
 fi
@@ -119,7 +134,52 @@ else
 	SUB_OPT=""
 fi
 
-FFMPEG_CMD="ffmpeg -y -strict experimental -i $INPUT $DI_OPT $RES_OPT $MAP_OPT -c:v $VC $BSF_OPT $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT $ACHAN_OPT -c:a $AC $AR_OPT $SUB_OPT $OUTPUT"
+
+if [ "$MVCDEC" != "y" ]
+then
+	FFMPEG_CMD="ffmpeg -y -strict experimental -i $INPUT $DI_OPT $RES_OPT $MAP_OPT -c:v $VC $BSF_OPT $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT $ACHAN_OPT -c:a $AC $AR_OPT $SUB_OPT $OUTPUT"
+else
+	# named pipes
+	DEMUX_H264="$TEMPDIR/video.h264"
+	DEMUX_AUDIOSUB="$TEMPDIR/audiosub.ts"
+	LDECOD_OUTPUT="$TEMPDIR/dec.yuv"
+	YUV_LEFT="$TEMPDIR/dec_ViewId0000.yuv"
+	YUV_RIGHT="$TEMPDIR/dec_ViewId0001.yuv"
+	YUV_SBS="$TEMPDIR/sbs.yuv"
+	mkfifo $DEMUX_H264 $YUV_LEFT $YUV_RIGHT $YUV_SBS $DEMUX_AUDIOSUB
+
+	# filter input information
+	let DRES_X=2*$RES_X
+
+	# enable/disable subtitle demux/remux
+	MAPSUB0="-map 0:s"
+	MAPSUB1="-map 1:s"
+	CODECSUB="-c:s copy"
+	if [ $NSUB -lt 1 ]
+	then
+		MAPSUB0=""
+		MAPSUB1=""
+		CODECSUB=""
+	fi
+
+	# extract raw H.264+MVC track with AnnexB flavour
+	ffmpeg -v 0 -y -i $INPUT -map 0:v -f h264 -c:v copy -bsf:v h264_mp4toannexb $DEMUX_H264 &
+	# extract audio and subtitles
+	ffmpeg -v 0 -y -i $INPUT -map 0:a $MAPSUB0 -c:a copy $CODECSUB $DEMUX_AUDIOSUB &
+	sleep 2
+
+	# decode H.264+MVC stream using Franhauffer JM 18.6 soft
+	#LDECODDBG="-p DecFrmNum=360"
+	ldecod.exe -d /usr/local/etc/decoder.cfg -p DecodeAllLayers=1 -p InputFile=$DEMUX_H264 -p OutputFile=$LDECOD_OUTPUT -p Silent=1 $LDECODDBG >/dev/null&
+	sleep 2
+
+	# bufferize 2 inputs and output a single Side By Side raw YUV420p stream
+	yuvsbspipe -w $RES_X -h $RES_Y -n 48 -l $YUV_LEFT -r $YUV_RIGHT -sbs -o $YUV_SBS &
+
+	sleep 2
+	FFMPEG_CMD="ffmpeg -y -f rawvideo -pixel_format yuv420p -video_size ${DRES_X}x${RES_Y} -framerate $FRAMERATE -i $YUV_SBS -i $DEMUX_AUDIOSUB -filter_complex '[0:v]scale=$RES_X:$RES_Y,setpts=PTS-STARTPTS[video];[1:a]asetpts=PTS-STARTPTS[audio]' -map [video] -map [audio] $MAPSUB1 -c:v $VC $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT $ACHAN_OPT -c:a $AC $AR_OPT $CODECSUB $OUTPUT"
+fi
+
 echo "$FFMPEG_CMD"
 date > $OUTPUT.log
 echo "$FFMPEG_CMD" >> $OUTPUT.log
@@ -129,3 +189,4 @@ cat $OUTPUT.log | grep -v "^frame=" > $OUTPUT.log2
 mv -f $OUTPUT.log2 $OUTPUT.log
 
 rm -fr $TEMPDIR
+
