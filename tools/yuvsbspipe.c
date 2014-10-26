@@ -150,7 +150,12 @@ int main(int argc, char* argv[])
 	    {
 		//fprintf(stderr,"Write %d\n",imgtowrite);
 		(*assemble) ( width, height, buffer[0]+imgtowrite*imgbytes, buffer[1]+imgtowrite*imgbytes, sbsimage );
-		write(fd_out,sbsimage,2*imgbytes);
+		nbytes = write(fd_out,sbsimage,2*imgbytes);
+		if( nbytes != (2*imgbytes) )
+		{
+			fprintf(stderr,"Write Error: %ld != %ld\n",nbytes,2*imgbytes);
+			return 1;
+		}
 		imgp[0][imgtowrite] = 0;
 		imgp[1][imgtowrite] = 0;
 		imgtowrite = ( imgtowrite + 1 ) % bufimages;
