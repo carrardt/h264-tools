@@ -1,13 +1,21 @@
 #!/bin/bash
 
+# grab command line parameters
+INPUT=$1
+OUTPUT=$2
+shift ; shift
+
+# some constants
+INSTALL_DIR=@CMAKE_INSTALL_PREFIX@
 PROF_LIST="baseline main high"
 PRESET_LIST="ultrafast superfast veryfast faster fast medium slow slower veryslow placebo"
 TUNE_LIST="film animation grain stillimage psnr ssim fastdecode zerolatency"
 VQ_LIST="1-32"
 
-INPUT=$1
-OUTPUT=$2
-shift ; shift
+# derived vars from constants
+LDECOD_CFG=$INSTALL_DIR/share/decoder.cfg
+LDECOD=$INSTALL_DIR/bin/ldecod
+YUVSBSPIPE=$INSTALL_DIR/bin/yuvsbspipe
 
 # Temp dir
 TEMPDIR=`mktemp -d`
@@ -18,9 +26,9 @@ INFO="$TEMPDIR/ffprobe.txt"
 ffprobe $INPUT 2>&1 |grep "^ *Stream #" > $INFO
 SL=`cat $INFO|cut -d':' -f2|cut -d'(' -f1|tr "\n" " "`
 FRAMERATE=`cat $INFO|grep "Video:"|head -n 1|cut -d',' -f4|tr -d " fps"`
-RES=`cat $INFO|grep "Video:"|head -n 1|cut -d',' -f3|cut -d' ' -f2`
+RES=`cat $INFO|grep "Video:"|head -n 1|sed "s/([^(]*)//g"|cut -d',' -f3|cut -d' ' -f2`
 NSUB=`cat $INFO|grep -c "Subtitle"`
-AFMT=`cat $INFO|grep "Audio"|head -n 1|cut -d',' -f3|cut -d'(' -f1|tr -d " "`
+AFMT=`cat $INFO|grep "Audio"|head -n 1|sed "s/([^(]*)//g"|cut -d',' -f3|cut -d'(' -f1|tr -d " "`
 
 # filter input information
 RES_X=`echo $RES|cut -d'x' -f1`
@@ -171,11 +179,11 @@ else
 
 	# decode H.264+MVC stream using Franhauffer JM 18.6 soft
 	#LDECODDBG="-p DecFrmNum=360"
-	ldecod.exe -d /usr/local/etc/decoder.cfg -p DecodeAllLayers=1 -p InputFile=$DEMUX_H264 -p OutputFile=$LDECOD_OUTPUT -p Silent=1 $LDECODDBG >/dev/null&
+	$LDECOD -d $LDECOD_CFG -p DecodeAllLayers=1 -p InputFile=$DEMUX_H264 -p OutputFile=$LDECOD_OUTPUT -p Silent=1 $LDECODDBG >/dev/null&
 	sleep 2
 
 	# bufferize 2 inputs and output a single Side By Side raw YUV420p stream
-	yuvsbspipe -w $RES_X -h $RES_Y -n 48 -l $YUV_LEFT -r $YUV_RIGHT -sbs -o $YUV_SBS &
+	$YUVSBSPIPE -w $RES_X -h $RES_Y -n 48 -l $YUV_LEFT -r $YUV_RIGHT -sbs -o $YUV_SBS &
 
 	sleep 2
 	FFMPEG_CMD="ffmpeg -y -f rawvideo -pixel_format yuv420p -video_size ${DRES_X}x${RES_Y} -framerate $FRAMERATE -i $YUV_SBS -i $DEMUX_AUDIOSUB -filter_complex [0:v]scale=$RES_X:$RES_Y,setpts=PTS-STARTPTS[video];[1:a]asetpts=PTS-STARTPTS[audio] -map [video] -map [audio] $MAPSUB1 -c:v $VC $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT $ACHAN_OPT -c:a $AC $AR_OPT $CODECSUB $OUTPUT"
