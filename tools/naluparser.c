@@ -52,7 +52,7 @@ struct ParserCtx
 	size_t typeStats[32];
 	size_t naluLen, maxNaluSize, naluCount, maxNALUs, naluTotalBytes;
 	int naluType,zeros;
-	int insertAUD,verbose,writeOutput,naluStartCode;
+	int insertAUD,verbose,writeOutput,naluStartCode,briefStats;
 	int sps_id_range[2];
 	int profile_idc_range[2];
 	int num_ref_frames_range[2];
@@ -197,8 +197,22 @@ if( (ctx->verbose==1 && (ctx->naluCount%256)==0 ) || ctx->verbose>=2 ) \
 
 #define NALU_FINAL_SATS(ctx) do {\
 int _c; \
-fprintf(stderr,"\n%ld NALUs, %ld bytes, sps [%d:%d], profile [%d:%d], ref_frames [%d:%d]\n",ctx->naluCount,ctx->naluTotalBytes,ctx->sps_id_range[0],ctx->sps_id_range[1],ctx->profile_idc_range[0],ctx->profile_idc_range[1],ctx->num_ref_frames_range[0],ctx->num_ref_frames_range[1]); \
-for(_c=0;_c<32;_c++) { if(ctx->typeStats[_c]>0) fprintf(stderr,"NALU type %d count : %ld\n",_c,ctx->typeStats[_c]); } \
+  if(! ctx->briefStats) { \
+	fprintf(stderr,"\n%ld NALUs, %ld bytes, sps [%d:%d], profile [%d:%d], ref_frames [%d:%d]\n" \
+	,ctx->naluCount,ctx->naluTotalBytes \
+	,ctx->sps_id_range[0],ctx->sps_id_range[1] \
+	,ctx->profile_idc_range[0],ctx->profile_idc_range[1] \
+	,ctx->num_ref_frames_range[0],ctx->num_ref_frames_range[1]); } \
+  for(_c=0;_c<32;_c++) { \
+	if( ! ctx->briefStats ) { \
+		if(ctx->typeStats[_c]>0) { \
+			fprintf(stderr,"NALU type %d count : %ld, %0.2F\%\n",_c,ctx->typeStats[_c],_c,ctx->typeStats[_c]*100.0/ctx->naluCount); \
+		} \
+	} \
+	else { \
+		fprintf(stderr, "%d:%d\n",_c,(int)( (ctx->typeStats[_c]*100)/ctx->naluCount ) ); \
+	} \
+  } \
 } while(0)
 
 
@@ -295,6 +309,7 @@ int main(int argc, char* argv[])
 		if( strcmp(argv[i],"-mkv") == 0 ) ctx->naluStartCode = 0;
 		else if( strcmp(argv[i],"-annexb") == 0 ) ctx->naluStartCode = 1;		
 		else if( strcmp(argv[i],"-stat") == 0 ) ctx->writeOutput = 0;
+		else if( strcmp(argv[i],"-b") == 0 ) ctx->briefStats = 1;
 		else if( strcmp(argv[i],"-aud") == 0 ) ctx->insertAUD = 1;
 		else if( strcmp(argv[i],"-nalucount") == 0 ) { ++i; ctx->maxNALUs = atoi(argv[i]); }
 		else if( strcmp(argv[i],"-v") == 0 ) { ++ ctx->verbose; }

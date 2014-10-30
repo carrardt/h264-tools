@@ -16,6 +16,7 @@ VQ_LIST="1-32"
 LDECOD_CFG=$INSTALL_DIR/share/decoder.cfg
 LDECOD=$INSTALL_DIR/bin/ldecod
 YUVSBSPIPE=$INSTALL_DIR/bin/yuvsbspipe
+NALUPARSER=$INSTALL_DIR/bin/naluparser
 
 # Temp dir
 TEMPDIR=`mktemp -d`
@@ -23,12 +24,24 @@ OFMT=`echo $OUTPUT|cut -d'.' -f2`
 
 # input info
 INFO="$TEMPDIR/ffprobe.txt"
+H264STATS="$TEMPDIR/h264stats.txt"
 ffprobe $INPUT 2>&1 |grep "^ *Stream #" > $INFO
 SL=`cat $INFO|cut -d':' -f2|cut -d'(' -f1|tr "\n" " "`
 FRAMERATE=`cat $INFO|grep "Video:"|head -n 1|cut -d',' -f4|tr -d " fps"`
 RES=`cat $INFO|grep "Video:"|head -n 1|sed "s/([^(]*)//g"|cut -d',' -f3|cut -d' ' -f2`
 NSUB=`cat $INFO|grep -c "Subtitle"`
 AFMT=`cat $INFO|grep "Audio"|head -n 1|sed "s/([^(]*)//g"|cut -d',' -f3|cut -d'(' -f1|tr -d " "`
+VCODEC=`cat $INFO|grep "Video:"|head -n 1|cut -d':' -f4|cut -d' ' -f2`
+
+# by default we don't try to decode 3D H.264 videos
+MVCDEC="n"
+if [ "$VCODEC" = "h264" ]
+then
+	echo "Analysing H.264 video stream ..."
+	ffmpeg -v 0 -i $INPUT -f h264 -c:v copy pipe:1 | $NALUPARSER -nalucount 1000 -stat -b 2>&1 >$H264STATS
+	PERCENTTYPE20=`cat $H264STATS|grep "^20:"|cut -d':' -f2`
+	[ $PERCENTTYPE20 -gt 5 ] && MVCDEC="y"
+fi
 
 # filter input information
 RES_X=`echo $RES|cut -d'x' -f1`
@@ -49,7 +62,6 @@ RES=""
 ARE="n"
 AR="768k"
 ACHAN=""
-MVCDEC="n"
 
 cat $INFO
 read -p "Streams [$SL] " R ; [ "$R" != "" ] && SL=$R
@@ -57,7 +69,10 @@ read -p "Re-encode video (y/n) [$VRE] " R ; [ "$R" != "" ] && VRE=$R
 if [ "$VRE" = "y" ]
 then
 	echo "Video settings :"
-	read -p "Decode MVC (y/n) [$MVCDEC] " R ; [ "$R" != "" ] && MVCDEC=$R
+	if [ "$MVCDEC" = "y" ]
+	then
+		read -p "Decode MVC (y/n) [$MVCDEC] " R ; [ "$R" != "" ] && MVCDEC=$R
+	fi
 	read -p "Preset ($PRESET_LIST) [$PRESET] " R ; [ "$R" != "" ] && PRESET=$R
 	read -p "Tune ($TUNE_LIST) [$TUNE] " R ; [ "$R" != "" ] && TUNE=$R
 	read -p "Profile ($PROF_LIST) [$PROF] " R ; [ "$R" != "" ] && PROF=$R
