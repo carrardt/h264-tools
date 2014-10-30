@@ -38,9 +38,13 @@ MVCDEC="n"
 if [ "$VCODEC" = "h264" ]
 then
 	echo "Analysing H.264 video stream ..."
-	ffmpeg -v 0 -i $INPUT -f h264 -c:v copy pipe:1 | $NALUPARSER -nalucount 1000 -stat -b 2>&1 >$H264STATS
+	ffmpeg -v 0 -i $INPUT -f h264 -c:v copy pipe:1 | $NALUPARSER -nalucount 1000 -stat -b 2>$H264STATS
 	PERCENTTYPE20=`cat $H264STATS|grep "^20:"|cut -d':' -f2`
-	[ $PERCENTTYPE20 -gt 5 ] && MVCDEC="y"
+	if [ $PERCENTTYPE20 -gt 5 ]
+	then
+		echo "3D video detected"
+		MVCDEC="y"
+	fi
 fi
 
 # filter input information
