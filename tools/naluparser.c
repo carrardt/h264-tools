@@ -206,7 +206,7 @@ int _c; \
   for(_c=0;_c<32;_c++) { \
 	if( ! ctx->briefStats ) { \
 		if(ctx->typeStats[_c]>0) { \
-			fprintf(stderr,"NALU type %d count : %ld, %0.2F\%\n",_c,ctx->typeStats[_c],_c,ctx->typeStats[_c]*100.0/ctx->naluCount); \
+			fprintf(stderr,"NALU type %d count : %ld, %0.2F%%\n",_c,ctx->typeStats[_c],ctx->typeStats[_c]*100.0/ctx->naluCount); \
 		} \
 	} \
 	else { \
