@@ -37,13 +37,14 @@ VCODEC=`cat $INFO|grep "Video:"|head -n 1|cut -d':' -f4|cut -d' ' -f2`
 MVCDEC="n"
 if [ "$VCODEC" = "h264" ]
 then
-	echo "Analysing H.264 video stream ..."
-	ffmpeg -v 0 -i $INPUT -f h264 -c:v copy pipe:1 | $NALUPARSER -nalucount 1000 -stat -b 2>$H264STATS
-	PERCENTTYPE20=`cat $H264STATS|grep "^20:"|cut -d':' -f2`
-	if [ $PERCENTTYPE20 -gt 5 ]
+	echo -n "Analysing H.264 video stream ... "
+	CSERATIO=`ffmpeg -v 0 -y -i $INPUT -f h264 -c:v copy pipe:1 </dev/null | $NALUPARSER -nalucount 1000 -stat -b 2>&1 |grep "^20:"|cut -d':' -f2`
+	if [ $CSERATIO -gt 5 ]
 	then
-		echo "3D video detected"
+		echo "3D (MVC) video detected"
 		MVCDEC="y"
+	else
+		echo "2D video detected"
 	fi
 fi
 
@@ -63,6 +64,7 @@ PROF=""
 LVL=""
 DI="n"
 RES=""
+VST="sbs"
 ARE="n"
 AR="768k"
 ACHAN=""
@@ -76,6 +78,10 @@ then
 	if [ "$MVCDEC" = "y" ]
 	then
 		read -p "Decode MVC (y/n) [$MVCDEC] " R ; [ "$R" != "" ] && MVCDEC=$R
+	fi
+	if [ "$MVCDEC" = "y" ]
+	then
+		read -p "stereo mode (sbs/tab) [$VST] " R ; [ "$R" != "" ] && VST=$R
 	fi
 	read -p "Preset ($PRESET_LIST) [$PRESET] " R ; [ "$R" != "" ] && PRESET=$R
 	read -p "Tune ($TUNE_LIST) [$TUNE] " R ; [ "$R" != "" ] && TUNE=$R
@@ -177,6 +183,18 @@ else
 
 	# filter input information
 	let DRES_X=2*$RES_X
+	let DRES_Y=2*$RES_Y
+
+	if [ "$VST" = "sbs" ]
+	then
+		VST_OPT="-sbs"
+		ORES_X=$DRES_X
+		ORES_Y=$RES_Y
+	else
+		VST_OPT="-tab"
+		ORES_X=$RES_X
+		ORES_Y=$DRES_Y
+	fi
 
 	# enable/disable subtitle demux/remux
 	MAPSUB0="-map 0:s"
@@ -202,10 +220,10 @@ else
 	sleep 2
 
 	# bufferize 2 inputs and output a single Side By Side raw YUV420p stream
-	$YUVSBSPIPE -w $RES_X -h $RES_Y -n 48 -l $YUV_LEFT -r $YUV_RIGHT -sbs -o $YUV_SBS &
+	$YUVSBSPIPE -w $RES_X -h $RES_Y -n 48 -l $YUV_LEFT -r $YUV_RIGHT $VST_OPT -o $YUV_SBS &
 
 	sleep 2
-	FFMPEG_CMD="ffmpeg -y -f rawvideo -pixel_format yuv420p -video_size ${DRES_X}x${RES_Y} -framerate $FRAMERATE -i $YUV_SBS -i $DEMUX_AUDIOSUB -filter_complex [0:v]scale=$RES_X:$RES_Y,setpts=PTS-STARTPTS[video];[1:a]asetpts=PTS-STARTPTS[audio] -map [video] -map [audio] $MAPSUB1 -c:v $VC $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT $ACHAN_OPT -c:a $AC $AR_OPT $CODECSUB $OUTPUT"
+	FFMPEG_CMD="ffmpeg -y -f rawvideo -pixel_format yuv420p -video_size ${ORES_X}x${ORES_Y} -framerate $FRAMERATE -i $YUV_SBS -i $DEMUX_AUDIOSUB -filter_complex [0:v]scale=$RES_X:$RES_Y,setpts=PTS-STARTPTS[video];[1:a]asetpts=PTS-STARTPTS[audio] -map [video] -map [audio] $MAPSUB1 -c:v $VC $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT $ACHAN_OPT -c:a $AC $AR_OPT $CODECSUB $OUTPUT"
 fi
 
 echo "$FFMPEG_CMD"
