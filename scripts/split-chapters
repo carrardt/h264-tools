@@ -1,0 +1,25 @@
+#!/bin/sh
+
+if [ $# -lt 2 ]
+then
+	echo "Usage: $0 input_movie output_dir"
+	exit 1
+fi
+
+FFMPEG=ffmpeg
+FILEPATH=$1
+OUTPUTDIR=$2
+FILE=`basename $FILEPATH`
+DIR=`dirname $FILEPATH`
+EXT=`echo $FILE|tr "." "\n"|tail -n 1`
+SOURCE=`basename $FILE .$EXT`
+
+for CHAPTER in `$FFMPEG -i "$FILEPATH" 2>&1 | grep "Chapter #[0-9]\.[0-9]*: start " | sed -E "s/ *Chapter #[0-9]+\.([0-9]+): start ([0-9]+\.[0-9]+), end ([0-9]+\.[0-9]+)/\1,\2,\3/g"`
+do
+	I=`echo $CHAPTER|cut -d',' -f1`
+	START=`echo $CHAPTER|cut -d',' -f2`
+	END=`echo $CHAPTER|cut -d',' -f3`
+	OFILE=`printf "%02d-$FILE" $I`
+	$DEBUG $FFMPEG -i "$FILEPATH" -c:v copy -c:a copy -ss $START -to $END -map_metadata -1 $OUTPUTDIR/$OFILE
+done
+
