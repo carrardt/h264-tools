@@ -3,7 +3,8 @@
 # grab command line parameters
 INPUT=$1
 OUTPUT=$2
-shift ; shift
+EXECCMD=$3
+echo "$EXECCMD"
 
 # some constants
 INSTALL_DIR=@CMAKE_INSTALL_PREFIX@
@@ -45,6 +46,7 @@ then
 		MVCDEC="y"
 	else
 		echo "2D video detected"
+		read -p "Force MVC decoding ? (y/n) [$MVCDEC] " R ; [ "$R" != "" ] && MVCDEC=$R
 	fi
 fi
 
@@ -179,7 +181,7 @@ else
 	YUV_LEFT="$TEMPDIR/dec_ViewId0000.yuv"
 	YUV_RIGHT="$TEMPDIR/dec_ViewId0001.yuv"
 	YUV_SBS="$TEMPDIR/sbs.yuv"
-	mkfifo $DEMUX_H264 $YUV_LEFT $YUV_RIGHT $YUV_SBS $DEMUX_AUDIOSUB
+	$EXECCMD mkfifo $DEMUX_H264 $YUV_LEFT $YUV_RIGHT $YUV_SBS $DEMUX_AUDIOSUB
 
 	# filter input information
 	let DRES_X=2*$RES_X
@@ -209,27 +211,27 @@ else
 
 	set -x
 	# extract raw H.264+MVC track with AnnexB flavour
-	ffmpeg -v 0 -y -i $INPUT -map 0:v -f h264 -c:v copy -bsf:v h264_mp4toannexb $DEMUX_H264 &
+	$EXECCMD ffmpeg -v 0 -y -i $INPUT -map 0:v -f h264 -c:v copy -bsf:v h264_mp4toannexb $DEMUX_H264 &
 	# extract audio and subtitles
-	ffmpeg -v 0 -y -i $INPUT -map 0:a $MAPSUB0 -c:a copy $CODECSUB $DEMUX_AUDIOSUB &
-	sleep 2
+	$EXECCMD ffmpeg -v 0 -y -i $INPUT -map 0:a $MAPSUB0 -c:a copy $CODECSUB $DEMUX_AUDIOSUB &
+	$EXECCMD sleep 2
 
 	# decode H.264+MVC stream using Franhauffer JM 18.6 soft
 	#LDECODDBG="-p DecFrmNum=360"
-	$LDECOD -d $LDECOD_CFG -p DecodeAllLayers=1 -p InputFile=$DEMUX_H264 -p OutputFile=$LDECOD_OUTPUT -p Silent=1 $LDECODDBG >/dev/null&
-	sleep 2
+	$EXECCMD $LDECOD -d $LDECOD_CFG -p DecodeAllLayers=1 -p InputFile=$DEMUX_H264 -p OutputFile=$LDECOD_OUTPUT -p Silent=1 $LDECODDBG >/dev/null&
+	$EXECCMD sleep 2
 
 	# bufferize 2 inputs and output a single Side By Side raw YUV420p stream
-	$YUVSBSPIPE -w $RES_X -h $RES_Y -n 48 -l $YUV_LEFT -r $YUV_RIGHT $VST_OPT -o $YUV_SBS &
+	$EXECCMD $YUVSBSPIPE -w $RES_X -h $RES_Y -n 48 -l $YUV_LEFT -r $YUV_RIGHT $VST_OPT -o $YUV_SBS &
 
-	sleep 2
+	$EXECCMD sleep 2
 	FFMPEG_CMD="ffmpeg -y -f rawvideo -pixel_format yuv420p -video_size ${ORES_X}x${ORES_Y} -framerate $FRAMERATE -i $YUV_SBS -i $DEMUX_AUDIOSUB -filter_complex [0:v]scale=$RES_X:$RES_Y,setpts=PTS-STARTPTS[video];[1:a]asetpts=PTS-STARTPTS[audio] -map [video] -map [audio] $MAPSUB1 -c:v $VC $TUNE_OPT $PRESET_OPT $PROF_OPT $LVL_OPT $VQ_OPT $VR_OPT $COMPAT_OPT $ACHAN_OPT -c:a $AC $AR_OPT $CODECSUB $OUTPUT"
 fi
 
 echo "$FFMPEG_CMD"
 date > $OUTPUT.log
 echo "$FFMPEG_CMD" >> $OUTPUT.log
-$FFMPEG_CMD 2>&1 | tee -a $OUTPUT.log
+$EXECCMD $FFMPEG_CMD 2>&1 | tee -a $OUTPUT.log
 date >> $OUTPUT.log
 cat $OUTPUT.log | grep -v "^frame=" > $OUTPUT.log2
 mv -f $OUTPUT.log2 $OUTPUT.log
